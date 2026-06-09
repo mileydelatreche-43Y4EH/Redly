@@ -52,6 +52,13 @@
     }
   });
 
+  function apiError(data, fallback = "Erreur serveur") {
+    const d = data?.detail;
+    if (typeof d === "string") return d;
+    if (Array.isArray(d)) return d.map((x) => x.msg || x).join(" ");
+    return fallback;
+  }
+
   function setStatus(msg, kind = "") {
     statusEl.textContent = msg;
     statusEl.className = "status" + (kind ? ` ${kind}` : "");
@@ -305,7 +312,7 @@
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data.detail || "Erreur serveur");
+        throw new Error(apiError(data));
       }
 
       showPreview(data);

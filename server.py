@@ -126,6 +126,13 @@ async def api_generate(req: GenerateRequest):
 
     t0 = time.perf_counter()
     content = req.content.strip()
+
+    if not os.getenv("ANTHROPIC_API_KEY", "").strip():
+        raise HTTPException(
+            400,
+            "ANTHROPIC_API_KEY manquante — ajoute-la dans Vercel → Settings → Environment Variables.",
+        )
+
     title = ""
     body = ""
     subreddit = ""
@@ -162,24 +169,30 @@ async def api_generate(req: GenerateRequest):
         raise HTTPException(502, f"Erreur réseau : {e}") from e
 
     elapsed = int((time.perf_counter() - t0) * 1000)
-    entry = history_add(
-        mode=req.mode,
-        content=content,
-        title=title,
-        body=body,
-        subreddit=subreddit or "r/...",
-        tone=req.tone,
-        count=req.count,
-        replies=replies,
-        elapsed_ms=elapsed,
-    )
+    history_id = ""
+    try:
+        entry = history_add(
+            mode=req.mode,
+            content=content,
+            title=title,
+            body=body,
+            subreddit=subreddit or "r/...",
+            tone=req.tone,
+            count=req.count,
+            replies=replies,
+            elapsed_ms=elapsed,
+        )
+        history_id = entry["id"]
+    except OSError:
+        pass
+
     return GenerateResponse(
         title=title,
         body=body,
         subreddit=subreddit or "r/...",
         replies=replies,
         elapsed_ms=elapsed,
-        history_id=entry["id"],
+        history_id=history_id,
     )
 
 

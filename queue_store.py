@@ -7,20 +7,25 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-QUEUE_FILE = ROOT / "data" / "queue.json"
+from storage_paths import data_dir
+
+MAX_ITEMS = 50
+
+
+def _queue_file() -> Path:
+    return data_dir() / "queue.json"
 
 
 def _ensure() -> None:
-    QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if not QUEUE_FILE.exists():
-        QUEUE_FILE.write_text('{"items":[]}', encoding="utf-8")
+    path = _queue_file()
+    if not path.exists():
+        path.write_text('{"items":[]}', encoding="utf-8")
 
 
 def _load() -> dict:
     _ensure()
     try:
-        data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(_queue_file().read_text(encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get("items"), list):
             return data
     except (json.JSONDecodeError, OSError):
@@ -30,7 +35,7 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     _ensure()
-    QUEUE_FILE.write_text(
+    _queue_file().write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

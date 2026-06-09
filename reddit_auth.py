@@ -11,10 +11,14 @@ from urllib.parse import urlencode
 
 import httpx
 
-ROOT = Path(__file__).resolve().parent
-AUTH_FILE = ROOT / "data" / "reddit_auth.json"
+from storage_paths import data_dir
+
 OAUTH_SCOPES = "read submit identity"
 _oauth_states: dict[str, float] = {}
+
+
+def _auth_file() -> Path:
+    return data_dir() / "reddit_auth.json"
 
 
 def _ua() -> str:
@@ -44,18 +48,18 @@ def credentials_configured() -> bool:
 
 
 def _load_auth() -> dict:
-    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if not AUTH_FILE.exists():
+    path = _auth_file()
+    if not path.exists():
         return {}
     try:
-        return json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
 
 
 def _save_auth(data: dict) -> None:
-    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    AUTH_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path = _auth_file()
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def auth_status() -> dict:
@@ -69,8 +73,9 @@ def auth_status() -> dict:
 
 
 def logout() -> None:
-    if AUTH_FILE.exists():
-        AUTH_FILE.unlink(missing_ok=True)
+    path = _auth_file()
+    if path.exists():
+        path.unlink(missing_ok=True)
 
 
 def start_oauth() -> str:
