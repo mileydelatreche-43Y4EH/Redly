@@ -43,6 +43,17 @@ def _sub_from_path(path: str) -> str:
     return ""
 
 
+def _post_id_from_path(path: str) -> str:
+    parts = path.strip("/").split("/")
+    if len(parts) >= 4 and parts[0] == "r" and parts[2] == "comments":
+        return parts[3]
+    return ""
+
+
+def _canonical_reddit_url(path: str) -> str:
+    return f"https://www.reddit.com{path.rstrip('/')}/"
+
+
 def _strip_html(fragment: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", fragment, flags=re.I)
     text = re.sub(r"</p>\s*", "\n\n", text, flags=re.I)
@@ -140,6 +151,67 @@ async def _fetch_html(client: httpx.AsyncClient, page_urls: list[str]) -> str:
     raise httpx.HTTPError("Aucune page Reddit accessible.")
 
 
+async def _fetch_via_oembed(
+    client: httpx.AsyncClient, canonical_url: str, path: str
+) -> tuple[str, str, str] | None:
+    try:
+        r = await client.get(
+            "https://www.reddit.com/oembed",
+            params={"url": canonical_url, "format": "json"},
+            headers=_HEADERS,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    title = (data.get("title") or "").strip()
+    if not title:
+        return None
+
+    sub = _sub_from_path(path)
+    embed_html = data.get("html") or ""
+    sub_m = re.search(r'href="https://www\.reddit\.com/r/([^/]+)/"', embed_html, re.I)
+    if sub_m:
+        sub = f"r/{sub_m.group(1)}"
+
+    return title, "", sub
+
+
+async def _fetch_via_pullpush(
+    client: httpx.AsyncClient, post_id: str, path: str
+) -> tuple[str, str, str] | None:
+    if not post_id:
+        return None
+    try:
+        r = await client.get(
+            "https://api.pullpush.io/reddit/search/submission/",
+            params={"ids": post_id},
+            headers=_HEADERS,
+            timeout=15.0,
+        )
+        if r.status_code != 200:
+            return None
+        payload = r.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not rows:
+            return None
+        post = rows[0]
+    except (httpx.HTTPError, ValueError, IndexError, TypeError):
+        return None
+
+    title = (post.get("title") or "").strip()
+    if not title:
+        return None
+
+    body = (post.get("selftext") or "").strip()
+    sub = (post.get("subreddit_name_prefixed") or post.get("subreddit") or "").strip()
+    if not sub:
+        sub = _sub_from_path(path)
+    return title, body, sub
+
+
 async def _fetch_via_oauth(client: httpx.AsyncClient, path: str) -> list | None:
     client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
     secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
@@ -200,6 +272,8 @@ async def fetch_reddit_post(url: str) -> dict:
     source = url.strip()
     async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, http2=False) as client:
         path, page_urls = await _resolve_post_path(client, source)
+        post_id = _post_id_from_path(path)
+        canonical = _canonical_reddit_url(path)
 
         try:
             page = await _fetch_html(client, page_urls)
@@ -214,6 +288,16 @@ async def fetch_reddit_post(url: str) -> dict:
             title, body, sub = _extract_post(data)
             if not sub:
                 sub = _sub_from_path(path)
+            return _result(title, body, sub, source)
+
+        pullpush = await _fetch_via_pullpush(client, post_id, path)
+        if pullpush:
+            title, body, sub = pullpush
+            return _result(title, body, sub, source)
+
+        oembed = await _fetch_via_oembed(client, canonical, path)
+        if oembed:
+            title, body, sub = oembed
             return _result(title, body, sub, source)
 
     raise ValueError(

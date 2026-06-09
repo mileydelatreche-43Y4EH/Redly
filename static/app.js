@@ -326,7 +326,11 @@
       const sec = data.elapsed_ms
         ? (data.elapsed_ms / 1000).toFixed(1)
         : ((performance.now() - t0) / 1000).toFixed(1);
-      setStatus(`${data.replies.length} réponses · ${sec}s`, "ok");
+      let msg = `${data.replies.length} réponses · ${sec}s`;
+      if (mode === "link" && !(data.body || "").trim()) {
+        msg += " · corps non lu (titre seul)";
+      }
+      setStatus(msg, "ok");
     } catch (err) {
       if (err.name === "AbortError") {
         setStatus("Trop long — réduis le nombre de réponses.", "error");
