@@ -20,17 +20,15 @@ _ANGLES = (
 )
 
 SYSTEM = (
-    "Tu écris UN commentaire Reddit fait pour être upvoté — comme un vrai user sur r/AskReddit. "
-    "Pas un assistant, pas un essayiste. "
-    "LONGUEUR : 1 à 2 phrases courtes, ~10 à 35 mots. "
-    "Contenu : anecdote perso crédible, chaos relatable, humour sec, ou punchline. "
-    "Style oral : minuscules au début ok, pas de point final obligatoire, "
-    "slang internet ok (mdrr, lmao, ngl, genre) si naturel. "
-    "Interdit : listes, moraline, « spoiler alert », formules creuses, "
-    "« en tant qu'… », guillemets autour du texte, toujours finir par une question. "
-    "Pas de fautes bêtes (lettre oubliée dans un mot). "
-    "LANGUE : réponds STRICTEMENT dans la langue indiquée (post FR → FR, post EN → EN). "
-    "Texte seul, prêt à coller sur Reddit."
+    "Tu écris UN commentaire Reddit ultra-court — comme un vrai user sur r/AskReddit. "
+    "LONGUEUR STRICTE : UNE seule phrase, 8 à 18 mots max. Jamais 2 phrases. "
+    "Exemples de bonne longueur : "
+    "« j'ai envoyé un message à tous mes crush d'enfance » · "
+    "« i once reorganized my whole room at 3am for no reason lmao ». "
+    "Contenu : anecdote perso, chaos relatable, punchline — pas de setup long. "
+    "Style oral : minuscules ok, pas de point final obligatoire, mdrr/lmao ok. "
+    "Interdit : paragraphes, listes, moraline, « spoiler alert », blabla. "
+    "Pas de fautes bêtes. LANGUE = celle du post (FR ou EN). Texte seul."
 )
 
 
@@ -90,19 +88,22 @@ def _clean_reply(text: str) -> str:
     return _trim_long_reply(text)
 
 
+_MAX_WORDS = 18
+
+
 def _trim_long_reply(text: str) -> str:
-    """Filet de sécurité si le modèle dépasse malgré le prompt."""
-    if len(text) <= 220:
-        return text
-    parts = re.split(r"(?<=[.!?…])\s+", text)
-    if len(parts) >= 2:
-        short = " ".join(parts[:2]).strip()
-        if len(short) <= 280:
-            return short
+    """Filet de sécurité — une phrase courte."""
+    text = text.strip()
     words = text.split()
-    if len(words) > 42:
-        return " ".join(words[:42]).rstrip(",;:") + "…"
-    return text
+    if len(words) <= _MAX_WORDS:
+        return text
+
+    parts = re.split(r"(?<=[.!?…])\s+", text, maxsplit=1)
+    first = parts[0].strip()
+    if first and len(first.split()) <= _MAX_WORDS:
+        return first
+
+    return " ".join(words[:_MAX_WORDS]).rstrip(",;:")
 
 
 def _anthropic_key() -> str:
@@ -132,12 +133,11 @@ async def _one_claude(
         f"Langue OBLIGATOIRE pour ta réponse : {lang_label}\n"
         f"Ton : {tone}\n"
         f"Angle (#{index + 1}) : {angle}\n"
-        "1 ou 2 phrases max, style commentaire Reddit qui marche. "
-        "Colle tel quel, sans intro."
+        "UNE phrase, 8-18 mots max. Pas de deuxième phrase. Colle tel quel."
     )
     payload = {
         "model": CLAUDE_MODEL,
-        "max_tokens": 90,
+        "max_tokens": 45,
         "system": SYSTEM,
         "messages": [{"role": "user", "content": user}],
     }
