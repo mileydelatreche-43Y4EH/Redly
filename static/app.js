@@ -1,6 +1,9 @@
 (() => {
   let mode = "link";
   let lastReplies = [];
+  let lastTranslations = [];
+  let postLang = "fr";
+  let showFrPreview = false;
   let activeHistoryId = null;
 
   const tabs = document.querySelectorAll(".tab");
@@ -23,6 +26,8 @@
   const historyList = document.getElementById("history-list");
   const historyEmpty = document.getElementById("history-empty");
   const historyClear = document.getElementById("history-clear");
+  const frPreviewWrap = document.getElementById("fr-preview-wrap");
+  const showFrPreviewInput = document.getElementById("show-fr-preview");
 
   const placeholders = {
     link: "https://www.reddit.com/r/.../comments/...",
@@ -50,6 +55,14 @@
       e.preventDefault();
       generateBtn.click();
     }
+  });
+
+  showFrPreviewInput.addEventListener("change", async () => {
+    showFrPreview = showFrPreviewInput.checked;
+    if (showFrPreview && !lastTranslations.length && lastReplies.length) {
+      await loadFrenchPreview();
+    }
+    updateReplyTexts();
   });
 
   function apiError(data, fallback = "Erreur serveur") {
@@ -126,8 +139,61 @@
     emptyPost.classList.add("hidden");
   }
 
-  function renderReplies(replies) {
+  function updateFrPreviewToggle() {
+    const show = postLang === "en" && lastReplies.length > 0;
+    frPreviewWrap.classList.toggle("hidden", !show);
+    if (!show) {
+      showFrPreview = false;
+      showFrPreviewInput.checked = false;
+    }
+  }
+
+  function displayText(index) {
+    if (showFrPreview && lastTranslations[index]) {
+      return lastTranslations[index];
+    }
+    return lastReplies[index] || "";
+  }
+
+  function updateReplyTexts() {
+    repliesEl.querySelectorAll(".reply-card").forEach((card, i) => {
+      const p = card.querySelector(".reply-text");
+      const hint = card.querySelector(".reply-fr-hint");
+      if (p) p.textContent = displayText(i);
+      if (hint) {
+        hint.classList.toggle("hidden", !(showFrPreview && postLang === "en"));
+      }
+    });
+  }
+
+  async function loadFrenchPreview() {
+    if (!lastReplies.length || postLang !== "en") {
+      lastTranslations = [];
+      return;
+    }
+    try {
+      const res = await fetch("/api/translate-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texts: lastReplies }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(apiError(data, "Traduction impossible"));
+      lastTranslations = data.translations || [];
+      updateReplyTexts();
+    } catch (err) {
+      setStatus(err.message || "Traduction impossible.", "error");
+      showFrPreview = false;
+      showFrPreviewInput.checked = false;
+    }
+  }
+
+  function renderReplies(replies, lang = postLang) {
     lastReplies = replies;
+    postLang = lang || "fr";
+    lastTranslations = [];
+    updateFrPreviewToggle();
+
     repliesEl.innerHTML = "";
     replies.forEach((text, i) => {
       const card = document.createElement("article");
@@ -145,7 +211,7 @@
       btn.type = "button";
       btn.className = "btn-copy";
       btn.textContent = "Copier";
-      btn.addEventListener("click", () => copyText(text, btn));
+      btn.addEventListener("click", () => copyText(lastReplies[i], btn));
 
       head.appendChild(num);
       head.appendChild(btn);
@@ -154,13 +220,22 @@
       p.className = "reply-text";
       p.textContent = text;
 
+      const hint = document.createElement("p");
+      hint.className = "reply-fr-hint hidden";
+      hint.textContent = "Aperçu FR — copie = anglais";
+
       card.appendChild(head);
       card.appendChild(p);
+      card.appendChild(hint);
       repliesEl.appendChild(card);
     });
 
     empty.classList.add("hidden");
     results.classList.remove("hidden");
+
+    if (showFrPreview && postLang === "en") {
+      loadFrenchPreview();
+    }
   }
 
   function setActiveHistory(id) {
@@ -190,7 +265,7 @@
       }
 
       showPreview(data);
-      renderReplies(data.replies || []);
+      renderReplies(data.replies || [], data.post_lang || "fr");
       setActiveHistory(id);
       setStatus(`${(data.replies || []).length} réponses (historique)`, "ok");
     } catch (err) {
@@ -295,7 +370,7 @@
     const t0 = performance.now();
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45000);
+    const timeout = setTimeout(() => controller.abort(), 60000);
 
     try {
       const res = await fetch("/api/generate", {
@@ -316,7 +391,7 @@
       }
 
       showPreview(data);
-      renderReplies(data.replies);
+      renderReplies(data.replies, data.post_lang || "fr");
 
       if (data.history_id) {
         setActiveHistory(data.history_id);

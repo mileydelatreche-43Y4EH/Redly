@@ -99,7 +99,13 @@
           <section id="results" class="results hidden">
             <div class="results-head">
               <h2 class="results-title">Réponses</h2>
-              <button type="button" id="copy-all" class="btn-ghost">Tout copier</button>
+              <div class="results-actions">
+                <label id="fr-preview-wrap" class="fr-preview-toggle hidden" title="Aperçu pour toi — la copie reste dans la langue du post">
+                  <input type="checkbox" id="show-fr-preview" />
+                  <span>Aperçu FR</span>
+                </label>
+                <button type="button" id="copy-all" class="btn-ghost">Tout copier</button>
+              </div>
             </div>
             <div id="replies" class="replies-list"></div>
           </section>

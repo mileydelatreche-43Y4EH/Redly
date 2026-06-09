@@ -828,6 +828,42 @@ body {
   background: var(--bg);
   z-index: 2;
   padding-bottom: 8px;
+  gap: 12px;
+}
+
+.results-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.fr-preview-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.fr-preview-toggle input {
+  accent-color: var(--orange);
+  cursor: pointer;
+}
+
+.fr-preview-toggle.hidden {
+  display: none;
+}
+
+.reply-fr-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
 }
 
 .results-title {

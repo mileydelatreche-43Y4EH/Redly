@@ -77,6 +77,7 @@ def add_item(
     count: int,
     replies: list[str],
     elapsed_ms: int,
+    post_lang: str = "fr",
 ) -> dict:
     data = _load()
     entry = {
@@ -91,6 +92,7 @@ def add_item(
         "count": count,
         "replies": replies,
         "elapsed_ms": elapsed_ms,
+        "post_lang": post_lang,
     }
     data["items"].insert(0, entry)
     data["items"] = data["items"][:MAX_ITEMS]

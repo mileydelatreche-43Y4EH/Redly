@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from ai_providers import generate_replies
+from ai_providers import generate_replies, translate_replies_fr
 from history_store import add_item as history_add
 from history_store import clear_all, delete_item, get_item, list_items
 from queue_store import (
@@ -82,8 +82,17 @@ class GenerateResponse(BaseModel):
     body: str
     subreddit: str
     replies: list[str]
+    post_lang: str = "fr"
     elapsed_ms: int = 0
     history_id: str = ""
+
+
+class TranslatePreviewRequest(BaseModel):
+    texts: list[str] = Field(..., min_length=1, max_length=10)
+
+
+class TranslatePreviewResponse(BaseModel):
+    translations: list[str]
 
 
 class HistoryItemSummary(BaseModel):
@@ -151,7 +160,7 @@ async def api_generate(req: GenerateRequest):
         raise HTTPException(502, f"Lien Reddit inaccessible : {e}") from e
 
     try:
-        replies = await generate_replies(
+        replies, post_lang = await generate_replies(
             title=title,
             body=body,
             subreddit=subreddit,
@@ -181,6 +190,7 @@ async def api_generate(req: GenerateRequest):
             count=req.count,
             replies=replies,
             elapsed_ms=elapsed,
+            post_lang=post_lang,
         )
         history_id = entry["id"]
     except OSError:
@@ -191,9 +201,23 @@ async def api_generate(req: GenerateRequest):
         body=body,
         subreddit=subreddit or "r/...",
         replies=replies,
+        post_lang=post_lang,
         elapsed_ms=elapsed,
         history_id=history_id,
     )
+
+
+@app.post("/api/translate-preview", response_model=TranslatePreviewResponse)
+async def api_translate_preview(req: TranslatePreviewRequest):
+    if not os.getenv("ANTHROPIC_API_KEY", "").strip():
+        raise HTTPException(400, "ANTHROPIC_API_KEY manquante.")
+    try:
+        translations = await translate_replies_fr(req.texts)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Erreur réseau : {e}") from e
+    return TranslatePreviewResponse(translations=translations)
 
 
 @app.get("/api/history", response_model=list[HistoryItemSummary])
@@ -309,7 +333,7 @@ async def api_reddit_run(req: ScanRequest):
             skipped += 1
             continue
         try:
-            replies = await generate_replies(
+            replies, _post_lang = await generate_replies(
                 title=post["title"],
                 body=post["body"],
                 subreddit=post["subreddit"],

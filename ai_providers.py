@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 
@@ -11,24 +12,37 @@ import httpx
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 _ANGLES = (
-    "anecdote perso courte, un peu absurde ou débile — comme un vrai commentaire upvoté",
-    "réponse relatable en 1 phrase, mdrr/lmao seulement si ça sonne naturel",
-    "confession casual, minuscules ok, pas besoin de point final",
-    "twist inattendu ou self-deprecating, zéro blabla avant",
-    "one-liner sec qui fait rire ou surprend",
-    "renvoie la question au OP ou deadpan, style oral Reddit",
+    "social : texto/crush/ex ex, gêne ou audace",
+    "lazy : t'as rien fait ou procrastiné de ouf",
+    "stunt / pari / truc dangereux raté",
+    "bouffe, achat impulsif ou dégât matériel",
+    "meta : « jamais rien de fou » ou tu retournes la question",
+    "confession un peu dark, gênante ou random",
+)
+
+_CLICHE_BAN = (
+    "réorganiser/ranger/classer cuisine/chambre/placard/épices/chaussettes, "
+    "2h/3h du mat, « for no reason », « absolutely no reason », "
+    "terminer par lmao/mdrr sur chaque réponse"
 )
 
 SYSTEM = (
-    "Tu écris UN commentaire Reddit ultra-court — comme un vrai user sur r/AskReddit. "
-    "LONGUEUR STRICTE : UNE seule phrase, 8 à 18 mots max. Jamais 2 phrases. "
-    "Exemples de bonne longueur : "
-    "« j'ai envoyé un message à tous mes crush d'enfance » · "
-    "« i once reorganized my whole room at 3am for no reason lmao ». "
-    "Contenu : anecdote perso, chaos relatable, punchline — pas de setup long. "
-    "Style oral : minuscules ok, pas de point final obligatoire, mdrr/lmao ok. "
-    "Interdit : paragraphes, listes, moraline, « spoiler alert », blabla. "
-    "Pas de fautes bêtes. LANGUE = celle du post (FR ou EN). Texte seul."
+    "Tu écris UN commentaire Reddit ultra-court — vrai user r/AskReddit, pas une IA. "
+    "LONGUEUR : UNE phrase, 8 à 18 mots. "
+    "Exemples : « j'ai envoyé un message à tous mes crush d'enfance » · "
+    "« Soulé à mort et j'ai essayé de coucher avec genre 5 filles mdrr » · "
+    "« je n'ai jamais fait quoi que ce soit de fou, suis-je une personne ennuyeuse ? ». "
+    "Varie les sujets : social, lazy, stunt, bouffe, meta, confession — pas toujours le même angle. "
+    "Style oral : minuscules ok, point final optionnel. "
+    "Slang rare (lmao/mdrr max 1 fois sur plusieurs réponses). "
+    f"Interdit : {_CLICHE_BAN}, listes, moraline, blabla IA. "
+    "Pas de fautes bêtes. LANGUE = celle du post. Texte seul."
+)
+
+_TRANSLATE_SYSTEM = (
+    "Traduis des commentaires Reddit en français oral et décontracté. "
+    "Garde le ton, la longueur, le slang si présent. "
+    "Réponds UNIQUEMENT avec un JSON valide : un tableau de strings, même ordre, même nombre."
 )
 
 
@@ -115,30 +129,19 @@ def _anthropic_key() -> str:
     return key
 
 
-async def _one_claude(
+async def _call_claude(
     client: httpx.AsyncClient,
     *,
-    context: str,
-    lang: str,
-    tone: str,
-    angle: str,
-    index: int,
+    system: str,
+    user: str,
+    max_tokens: int,
+    temperature: float = 1.0,
 ) -> str:
-    if index:
-        await asyncio.sleep(index * 0.2)
-
-    lang_label = "français" if lang == "fr" else "anglais"
-    user = (
-        f"{context}\n\n"
-        f"Langue OBLIGATOIRE pour ta réponse : {lang_label}\n"
-        f"Ton : {tone}\n"
-        f"Angle (#{index + 1}) : {angle}\n"
-        "UNE phrase, 8-18 mots max. Pas de deuxième phrase. Colle tel quel."
-    )
     payload = {
         "model": CLAUDE_MODEL,
-        "max_tokens": 45,
-        "system": SYSTEM,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system": system,
         "messages": [{"role": "user", "content": user}],
     }
     headers = {
@@ -155,8 +158,7 @@ async def _one_claude(
             json=payload,
         )
         if r.status_code == 429:
-            wait = 1.5 * (attempt + 1)
-            await asyncio.sleep(wait)
+            await asyncio.sleep(1.5 * (attempt + 1))
             last_err = httpx.HTTPStatusError(
                 "429 Too Many Requests", request=r.request, response=r
             )
@@ -164,9 +166,9 @@ async def _one_claude(
         try:
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
-            detail = r.text[:200].replace("\n", " ")
+            detail = e.response.text[:200].replace("\n", " ")
             raise RuntimeError(
-                f"Erreur Claude ({r.status_code}) : {detail}"
+                f"Erreur Claude ({e.response.status_code}) : {detail}"
             ) from e
         for block in r.json().get("content", []):
             if block.get("type") == "text":
@@ -178,6 +180,36 @@ async def _one_claude(
     ) from last_err
 
 
+async def _one_claude(
+    client: httpx.AsyncClient,
+    *,
+    context: str,
+    lang: str,
+    tone: str,
+    angle: str,
+    index: int,
+    avoid: list[str],
+) -> str:
+    lang_label = "français" if lang == "fr" else "anglais"
+    avoid_block = ""
+    if avoid:
+        avoid_block = (
+            "\n\nRéponses déjà générées — NE PAS répéter idée, structure ou mots-clés :\n"
+            + "\n".join(f"• {r}" for r in avoid)
+        )
+
+    user = (
+        f"{context}{avoid_block}\n\n"
+        f"Langue OBLIGATOIRE : {lang_label}\n"
+        f"Ton : {tone}\n"
+        f"Angle (#{index + 1}) : {angle}\n"
+        "UNE phrase, 8-18 mots. Original et différent des autres. Colle tel quel."
+    )
+    return await _call_claude(
+        client, system=SYSTEM, user=user, max_tokens=45, temperature=1.0
+    )
+
+
 async def generate_replies(
     *,
     title: str,
@@ -185,26 +217,60 @@ async def generate_replies(
     subreddit: str,
     tone: str,
     count: int,
-) -> list[str]:
+) -> tuple[list[str], str]:
     lang = _detect_language(title, body)
     context = _post_context(title, body, subreddit, lang)
+    replies: list[str] = []
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        raw = await asyncio.gather(
-            *[
-                _one_claude(
-                    client,
-                    context=context,
-                    lang=lang,
-                    tone=tone,
-                    angle=_ANGLES[i % len(_ANGLES)],
-                    index=i,
-                )
-                for i in range(count)
-            ]
-        )
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        for i in range(count):
+            raw = await _one_claude(
+                client,
+                context=context,
+                lang=lang,
+                tone=tone,
+                angle=_ANGLES[i % len(_ANGLES)],
+                index=i,
+                avoid=replies,
+            )
+            cleaned = _clean_reply(raw)
+            if cleaned:
+                replies.append(cleaned)
 
-    replies = [_clean_reply(t) for t in raw if _clean_reply(t)]
     if not replies:
         raise RuntimeError("Claude n'a renvoyé aucune réponse. Réessaie.")
-    return replies
+    return replies, lang
+
+
+async def translate_replies_fr(texts: list[str]) -> list[str]:
+    """Traduction aperçu FR — ne modifie pas les originaux."""
+    if not texts:
+        return []
+    if _detect_language("", " ".join(texts)) == "fr":
+        return list(texts)
+
+    user = json.dumps(texts, ensure_ascii=False)
+    raw = ""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        raw = await _call_claude(
+            client,
+            system=_TRANSLATE_SYSTEM,
+            user=user,
+            max_tokens=400,
+            temperature=0.2,
+        )
+
+    try:
+        start = raw.find("[")
+        end = raw.rfind("]") + 1
+        if start >= 0 and end > start:
+            parsed = json.loads(raw[start:end])
+            if isinstance(parsed, list) and len(parsed) == len(texts):
+                return [str(x).strip() for x in parsed]
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if len(lines) >= len(texts):
+        return lines[: len(texts)]
+    return list(texts)
