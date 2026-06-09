@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Redly — Auto</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="top">
+      <div class="brand">
+        <img src="/static/logo.png" alt="" class="brand-logo" width="48" height="48" />
+        <div>
+          <h1 class="brand-name">redly</h1>
+          <p class="brand-sub">Mode auto · scan · valider · publier</p>
+        </div>
+      </div>
+      <nav class="nav-main">
+        <a href="/" class="nav-link">Manuel</a>
+        <a href="/auto" class="nav-link active">Auto</a>
+      </nav>
+    </header>
+
+    <section class="auth-bar" id="auth-bar">
+      <div id="auth-info" class="auth-info">Chargement…</div>
+      <div class="auth-actions">
+        <a href="/api/reddit/auth/start" id="auth-connect" class="btn-ghost hidden">Connecter Reddit</a>
+        <button type="button" id="auth-logout" class="btn-ghost hidden">Déconnecter</button>
+      </div>
+    </section>
+
+    <main class="auto-layout">
+      <section class="panel auto-panel">
+        <h2 class="panel-title">Critères de scan</h2>
+
+        <label class="field-label" for="subreddit">Subreddit</label>
+        <input id="subreddit" class="input" type="text" placeholder="AskReddit" spellcheck="false" />
+
+        <div class="options">
+          <div class="option">
+            <label class="field-label" for="sort">Tri</label>
+            <select id="sort" class="select">
+              <option value="new" selected>Nouveaux</option>
+              <option value="hot">Hot</option>
+              <option value="rising">Rising</option>
+              <option value="top">Top</option>
+            </select>
+          </div>
+          <div class="option option-sm">
+            <label class="field-label" for="limit">Posts</label>
+            <select id="limit" class="select">
+              <option value="5">5</option>
+              <option value="8" selected>8</option>
+              <option value="12">12</option>
+              <option value="20">20</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="options">
+          <div class="option">
+            <label class="field-label" for="min-score">Score min.</label>
+            <input id="min-score" class="input" type="number" min="0" value="0" />
+          </div>
+          <div class="option">
+            <label class="field-label" for="max-age">Âge max (h)</label>
+            <input id="max-age" class="input" type="number" min="1" max="168" value="48" />
+          </div>
+        </div>
+
+        <label class="field-label" for="keyword">Mot-clé dans le titre (optionnel)</label>
+        <input id="keyword" class="input" type="text" placeholder="ex: question, help…" />
+
+        <label class="field-label" for="tone">Ton des réponses</label>
+        <select id="tone" class="select">
+          <option value="naturel et humain">Naturel</option>
+          <option value="amical et décontracté">Amical</option>
+          <option value="sarcastique léger">Sarcastique</option>
+          <option value="utile et informatif">Expert</option>
+          <option value="court et direct">Court</option>
+        </select>
+
+        <label class="check-row">
+          <input type="checkbox" id="text-only" />
+          <span>Posts texte uniquement (pas les liens)</span>
+        </label>
+
+        <button type="button" id="run" class="btn-main">
+          <span class="btn-label">Scanner &amp; générer</span>
+          <span class="btn-spinner hidden" aria-hidden="true"></span>
+        </button>
+        <p id="status" class="status" aria-live="polite"></p>
+
+        <p class="auto-hint">
+          Les réponses sont générées automatiquement. Tu <strong>dois</strong> les relire avant de publier.
+        </p>
+      </section>
+
+      <section class="auto-queue-wrap">
+        <div class="queue-head">
+          <h2 class="panel-title">File d'attente</h2>
+          <button type="button" id="clear-done" class="btn-ghost btn-ghost-sm">Effacer publiés/ignorés</button>
+        </div>
+        <div id="queue" class="queue-list">
+          <p class="queue-empty">Lance un scan pour remplir la file.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/auto.js"></script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Redly</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="top">
+      <div class="brand">
+        <img src="/static/logo.png" alt="" class="brand-logo" width="48" height="48" />
+        <div>
+          <h1 class="brand-name">redly</h1>
+          <p class="brand-sub">Réponses Reddit · Claude · copier-coller</p>
+        </div>
+      </div>
+      <nav class="nav-main">
+        <a href="/" class="nav-link active">Manuel</a>
+        <a href="/auto" class="nav-link">Auto</a>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" data-mode="link">Lien</button>
+          <button type="button" class="tab" data-mode="text">Texte</button>
+        </div>
+
+        <label class="field-label" for="content">Post Reddit</label>
+        <textarea
+          id="content"
+          class="textarea textarea-main"
+          rows="8"
+          placeholder="https://www.reddit.com/r/.../comments/..."
+          spellcheck="true"
+        ></textarea>
+
+        <div class="options">
+          <div class="option">
+            <label class="field-label" for="tone">Ton</label>
+            <select id="tone" class="select">
+              <option value="naturel et humain">Naturel</option>
+              <option value="amical et décontracté">Amical</option>
+              <option value="sarcastique léger">Sarcastique</option>
+              <option value="utile et informatif">Expert</option>
+              <option value="court et direct">Court</option>
+            </select>
+          </div>
+          <div class="option option-sm">
+            <label class="field-label" for="count">Réponses</label>
+            <select id="count" class="select">
+              <option value="3">3</option>
+              <option value="4" selected>4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+            </select>
+          </div>
+        </div>
+
+        <button type="button" id="generate" class="btn-main">
+          <span class="btn-label">Générer</span>
+          <span class="btn-spinner hidden" aria-hidden="true"></span>
+        </button>
+        <p id="status" class="status" aria-live="polite"></p>
+
+        <section class="history-block">
+          <div class="history-head">
+            <h2 class="history-title">Historique</h2>
+            <button type="button" id="history-clear" class="btn-ghost btn-ghost-sm hidden">Effacer</button>
+          </div>
+          <ul id="history-list" class="history-list"></ul>
+          <p id="history-empty" class="history-empty">Aucune génération.</p>
+        </section>
+      </section>
+
+      <section class="col-main">
+        <section class="col-post">
+          <section id="preview" class="post-card hidden">
+            <div class="post-vote" aria-hidden="true">
+              <span class="vote-up">▲</span>
+            </div>
+            <div class="post-inner">
+              <span id="preview-sub" class="subreddit">r/...</span>
+              <h2 id="preview-title" class="post-title"></h2>
+              <p id="preview-body" class="post-body"></p>
+            </div>
+          </section>
+          <div id="empty-post" class="empty empty-post">
+            <p>Le post s'affiche ici.</p>
+          </div>
+        </section>
+
+        <section class="col-replies">
+          <section id="results" class="results hidden">
+            <div class="results-head">
+              <h2 class="results-title">Réponses</h2>
+              <button type="button" id="copy-all" class="btn-ghost">Tout copier</button>
+            </div>
+            <div id="replies" class="replies-list"></div>
+          </section>
+          <div id="empty" class="empty empty-replies">
+            <p>Les réponses apparaissent en dessous.</p>
+            <p class="empty-sub">Grand format · copie en un clic</p>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
