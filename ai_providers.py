@@ -11,22 +11,26 @@ import httpx
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 _ANGLES = (
-    "1 phrase, opinion nette",
-    "2 phrases max, ton décontracté",
-    "réponse courte + question à la fin",
-    "sec et direct, zéro blabla",
-    "mini anecdote (1 phrase) si ça colle",
-    "conseil concret en une ligne",
+    "anecdote perso courte, un peu absurde ou débile — comme un vrai commentaire upvoté",
+    "réponse relatable en 1 phrase, mdrr/lmao seulement si ça sonne naturel",
+    "confession casual, minuscules ok, pas besoin de point final",
+    "twist inattendu ou self-deprecating, zéro blabla avant",
+    "one-liner sec qui fait rire ou surprend",
+    "renvoie la question au OP ou deadpan, style oral Reddit",
 )
 
 SYSTEM = (
-    "Tu rédiges UN commentaire Reddit court, percutant et humain. "
-    "Comme un vrai utilisateur : naturel, pas de formules creuses, pas de listes, "
-    "pas de moraline ni de « voici pourquoi » en trois paragraphes. "
-    "LONGUEUR STRICTE : 15 à 40 mots, 1 ou 2 phrases maximum. "
-    "Va droit au but — une idée claire, pas de répétition. "
-    "Jamais « En tant qu'IA ». Pas de guillemets. "
-    "Français sauf si le post est clairement dans une autre langue. Texte seul."
+    "Tu écris UN commentaire Reddit fait pour être upvoté — comme un vrai user sur r/AskReddit. "
+    "Pas un assistant, pas un essayiste. "
+    "LONGUEUR : 1 à 2 phrases courtes, ~10 à 35 mots. "
+    "Contenu : anecdote perso crédible, chaos relatable, humour sec, ou punchline. "
+    "Style oral : minuscules au début ok, pas de point final obligatoire, "
+    "slang internet ok (mdrr, lmao, ngl, genre) si naturel. "
+    "Interdit : listes, moraline, « spoiler alert », formules creuses, "
+    "« en tant qu'… », guillemets autour du texte, toujours finir par une question. "
+    "Pas de fautes bêtes (lettre oubliée dans un mot). "
+    "LANGUE : réponds STRICTEMENT dans la langue indiquée (post FR → FR, post EN → EN). "
+    "Texte seul, prêt à coller sur Reddit."
 )
 
 
@@ -35,8 +39,39 @@ def _clip(text: str, limit: int = 1200) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def _post_context(title: str, body: str, subreddit: str) -> str:
-    parts = []
+def _detect_language(title: str, body: str) -> str:
+    """fr ou en — selon le titre/corps du post."""
+    sample = f"{title} {body}".strip().lower()
+    if not sample:
+        return "fr"
+
+    fr = len(
+        re.findall(
+            r"[àâäéèêëïîôùûüç]|"
+            r"\b(je|j'ai|tu|t'as|vous|qu'|c'est|une|des|les|pas|plus|truc|genre|"
+            r"quoi|quand|pour|être|fais|fait|ennuy|folle|chose|jamais|suis|ai|as)\b",
+            sample,
+        )
+    )
+    en = len(
+        re.findall(
+            r"\b(the|you|what|when|did|have|was|were|my|your|something|crazy|thing|"
+            r"about|just|never|bored|most|that|this|how|why|i'm|i've|don't|anyone|ever)\b",
+            sample,
+        )
+    )
+    if en > fr and en >= 2:
+        return "en"
+    if fr >= 2:
+        return "fr"
+    if en >= 1 and fr == 0:
+        return "en"
+    return "fr"
+
+
+def _post_context(title: str, body: str, subreddit: str, lang: str) -> str:
+    lang_label = "français" if lang == "fr" else "anglais"
+    parts = [f"Langue du post : {lang_label}"]
     if subreddit and subreddit not in ("r/...", ""):
         parts.append(f"Subreddit : {subreddit}")
     parts.append(f"Titre : {title.strip()}")
@@ -83,19 +118,22 @@ async def _one_claude(
     client: httpx.AsyncClient,
     *,
     context: str,
+    lang: str,
     tone: str,
     angle: str,
     index: int,
 ) -> str:
-    # Léger décalage pour éviter le burst 429 quand on génère 4+ réponses en parallèle.
     if index:
         await asyncio.sleep(index * 0.2)
 
+    lang_label = "français" if lang == "fr" else "anglais"
     user = (
-        f"{context}\n\nTon : {tone}\n"
-        f"Style (#{index + 1}) : {angle}\n"
-        "Écris 1 ou 2 phrases courtes (max ~40 mots). Pas de paragraphe. "
-        "Prêt à publier tel quel sur Reddit."
+        f"{context}\n\n"
+        f"Langue OBLIGATOIRE pour ta réponse : {lang_label}\n"
+        f"Ton : {tone}\n"
+        f"Angle (#{index + 1}) : {angle}\n"
+        "1 ou 2 phrases max, style commentaire Reddit qui marche. "
+        "Colle tel quel, sans intro."
     )
     payload = {
         "model": CLAUDE_MODEL,
@@ -148,7 +186,8 @@ async def generate_replies(
     tone: str,
     count: int,
 ) -> list[str]:
-    context = _post_context(title, body, subreddit)
+    lang = _detect_language(title, body)
+    context = _post_context(title, body, subreddit, lang)
 
     async with httpx.AsyncClient(timeout=45.0) as client:
         raw = await asyncio.gather(
@@ -156,6 +195,7 @@ async def generate_replies(
                 _one_claude(
                     client,
                     context=context,
+                    lang=lang,
                     tone=tone,
                     angle=_ANGLES[i % len(_ANGLES)],
                     index=i,
