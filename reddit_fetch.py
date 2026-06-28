@@ -212,6 +212,128 @@ async def _fetch_via_pullpush(
     return title, body, sub
 
 
+def _extract_top_comments(payload: list, *, limit: int = 12) -> list[dict]:
+    """Extrait les commentaires racine les mieux notés depuis l'API .json Reddit."""
+    if not isinstance(payload, list) or len(payload) < 2:
+        return []
+
+    comments: list[dict] = []
+    children = payload[1].get("data", {}).get("children", [])
+    for child in children:
+        if child.get("kind") != "t1":
+            continue
+        data = child.get("data") or {}
+        body = (data.get("body") or "").strip()
+        if not body or body in ("[deleted]", "[removed]"):
+            continue
+        author = (data.get("author") or "").strip()
+        if author.lower() in ("automoderator", "[deleted]"):
+            continue
+        comments.append(
+            {
+                "body": body,
+                "score": int(data.get("score") or 0),
+                "author": author,
+            }
+        )
+
+    comments.sort(key=lambda c: c["score"], reverse=True)
+    return comments[:limit]
+
+
+async def _fetch_comments_json(
+    client: httpx.AsyncClient, path: str, *, limit: int = 12
+) -> list[dict]:
+    url = f"https://www.reddit.com{path.rstrip('/')}.json"
+    try:
+        r = await client.get(
+            url,
+            headers=_HEADERS,
+            params={"limit": 50, "sort": "best", "depth": 2, "raw_json": 1},
+            timeout=20.0,
+        )
+        if r.status_code != 200:
+            return []
+        payload = r.json()
+        if not isinstance(payload, list):
+            return []
+        return _extract_top_comments(payload, limit=limit)
+    except (httpx.HTTPError, ValueError, TypeError):
+        return []
+
+
+async def _fetch_comments_oauth(
+    client: httpx.AsyncClient, path: str, *, limit: int = 12
+) -> list[dict]:
+    data = await _fetch_via_oauth_comments(client, path, limit=limit)
+    if not data:
+        return []
+    return _extract_top_comments(data, limit=limit)
+
+
+async def _fetch_via_oauth_comments(
+    client: httpx.AsyncClient, path: str, *, limit: int = 12
+) -> list | None:
+    client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
+    secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+    if not client_id or not secret:
+        return None
+
+    token_r = await client.post(
+        "https://www.reddit.com/api/v1/access_token",
+        data={"grant_type": "client_credentials"},
+        auth=(client_id, secret),
+        headers={"User-Agent": _HEADERS["User-Agent"]},
+    )
+    if token_r.status_code != 200:
+        return None
+
+    token = token_r.json().get("access_token")
+    if not token:
+        return None
+
+    parts = path.strip("/").split("/")
+    if len(parts) < 4 or parts[0] != "r" or parts[2] != "comments":
+        return None
+    post_id = parts[3]
+
+    api_r = await client.get(
+        f"https://oauth.reddit.com/comments/{post_id}",
+        headers={
+            "User-Agent": _HEADERS["User-Agent"],
+            "Authorization": f"bearer {token}",
+        },
+        params={"limit": 40, "depth": 2, "sort": "best", "raw_json": 1},
+    )
+    if api_r.status_code != 200:
+        return None
+    data = api_r.json()
+    if isinstance(data, list) and data:
+        return data
+    return None
+
+
+async def fetch_post_comments(
+    client: httpx.AsyncClient,
+    *,
+    path: str | None = None,
+    post_id: str | None = None,
+    limit: int = 12,
+) -> list[dict]:
+    """Récupère les meilleurs commentaires d'un post (JSON public puis OAuth)."""
+    if path:
+        comments = await _fetch_comments_json(client, path, limit=limit)
+        if comments:
+            return comments
+        return await _fetch_comments_oauth(client, path, limit=limit)
+
+    if post_id:
+        fake_path = f"/r/_/comments/{post_id}"
+        return await _fetch_comments_oauth(client, fake_path, limit=limit)
+
+    return []
+
+
 async def _fetch_via_oauth(client: httpx.AsyncClient, path: str) -> list | None:
     client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
     secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
@@ -252,7 +374,13 @@ async def _fetch_via_oauth(client: httpx.AsyncClient, path: str) -> list | None:
     return None
 
 
-def _result(title: str, body: str, sub: str, source_url: str) -> dict:
+def _result(
+    title: str,
+    body: str,
+    sub: str,
+    source_url: str,
+    comments: list[dict] | None = None,
+) -> dict:
     if not title:
         raise ValueError("Impossible de lire le titre du post.")
     if sub and not sub.startswith("r/"):
@@ -262,6 +390,7 @@ def _result(title: str, body: str, sub: str, source_url: str) -> dict:
         "body": body,
         "subreddit": sub or "r/...",
         "source_url": source_url,
+        "comments": comments or [],
     }
 
 
@@ -279,7 +408,8 @@ async def fetch_reddit_post(url: str) -> dict:
             page = await _fetch_html(client, page_urls)
             title, body, sub = _parse_old_reddit_html(page, path)
             if title:
-                return _result(title, body, sub, source)
+                comments = await fetch_post_comments(client, path=path)
+                return _result(title, body, sub, source, comments)
         except httpx.HTTPError:
             pass
 
@@ -288,17 +418,22 @@ async def fetch_reddit_post(url: str) -> dict:
             title, body, sub = _extract_post(data)
             if not sub:
                 sub = _sub_from_path(path)
-            return _result(title, body, sub, source)
+            comments = _extract_top_comments(data, limit=12)
+            if not comments:
+                comments = await fetch_post_comments(client, path=path)
+            return _result(title, body, sub, source, comments)
 
         pullpush = await _fetch_via_pullpush(client, post_id, path)
         if pullpush:
             title, body, sub = pullpush
-            return _result(title, body, sub, source)
+            comments = await fetch_post_comments(client, path=path)
+            return _result(title, body, sub, source, comments)
 
         oembed = await _fetch_via_oembed(client, canonical, path)
         if oembed:
             title, body, sub = oembed
-            return _result(title, body, sub, source)
+            comments = await fetch_post_comments(client, path=path)
+            return _result(title, body, sub, source, comments)
 
     raise ValueError(
         "Impossible de charger le post Reddit. "

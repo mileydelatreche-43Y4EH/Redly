@@ -37,7 +37,8 @@ from reddit_auth import (
     start_oauth,
     verify_state,
 )
-from reddit_fetch import fetch_reddit_post
+from reddit_fetch import fetch_post_comments, fetch_reddit_post
+from thread_style import format_style_brief, load_subreddit_profile, prepare_thread_style
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -85,6 +86,9 @@ class GenerateResponse(BaseModel):
     post_lang: str = "fr"
     elapsed_ms: int = 0
     history_id: str = ""
+    comments_analyzed: int = 0
+    style_learned: bool = False
+    subreddit_sessions: int = 0
 
 
 class TranslatePreviewRequest(BaseModel):
@@ -145,12 +149,17 @@ async def api_generate(req: GenerateRequest):
     title = ""
     body = ""
     subreddit = ""
+    comments: list[dict] = []
+    style_brief: str | None = None
+    style_hints: dict = {}
+    style_meta: dict = {}
 
     try:
         if req.mode == "link":
             post = await fetch_reddit_post(content)
             title, body = _normalize_post(post["title"], post["body"])
             subreddit = post["subreddit"]
+            comments = post.get("comments") or []
         else:
             title, body = _parse_text_content(content)
             subreddit = ""
@@ -159,6 +168,30 @@ async def api_generate(req: GenerateRequest):
     except httpx.HTTPError as e:
         raise HTTPException(502, f"Lien Reddit inaccessible : {e}") from e
 
+    async with httpx.AsyncClient(timeout=45.0) as style_client:
+        if comments:
+            style_brief, style_hints, style_meta = await prepare_thread_style(
+                style_client,
+                title=title,
+                body=body,
+                subreddit=subreddit,
+                comments=comments,
+            )
+        elif subreddit:
+            profile = load_subreddit_profile(subreddit)
+            if profile and profile.get("summary"):
+                style_brief = format_style_brief(
+                    analysis=None,
+                    profile=profile,
+                    comments=[],
+                )
+                style_meta = {
+                    "comments_analyzed": 0,
+                    "style_learned": True,
+                    "subreddit_sessions": int(profile.get("sessions") or 0),
+                    "had_profile": True,
+                }
+
     try:
         replies, post_lang = await generate_replies(
             title=title,
@@ -166,6 +199,8 @@ async def api_generate(req: GenerateRequest):
             subreddit=subreddit,
             tone=req.tone,
             count=req.count,
+            style_brief=style_brief,
+            style_hints=style_hints or None,
         )
     except RuntimeError as e:
         raise HTTPException(400, str(e)) from e
@@ -204,6 +239,9 @@ async def api_generate(req: GenerateRequest):
         post_lang=post_lang,
         elapsed_ms=elapsed,
         history_id=history_id,
+        comments_analyzed=int(style_meta.get("comments_analyzed") or 0),
+        style_learned=bool(style_meta.get("style_learned")),
+        subreddit_sessions=int(style_meta.get("subreddit_sessions") or 0),
     )
 
 
@@ -332,6 +370,31 @@ async def api_reddit_run(req: ScanRequest):
         if not entry:
             skipped += 1
             continue
+        post_comments: list[dict] = []
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as comment_client:
+                post_comments = await fetch_post_comments(
+                    comment_client,
+                    post_id=post["post_id"],
+                )
+        except Exception:
+            post_comments = []
+
+        style_brief = None
+        style_hints = None
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as style_client:
+                if post_comments:
+                    style_brief, style_hints, _meta = await prepare_thread_style(
+                        style_client,
+                        title=post["title"],
+                        body=post["body"],
+                        subreddit=post["subreddit"],
+                        comments=post_comments,
+                    )
+        except Exception:
+            pass
+
         try:
             replies, _post_lang = await generate_replies(
                 title=post["title"],
@@ -339,6 +402,8 @@ async def api_reddit_run(req: ScanRequest):
                 subreddit=post["subreddit"],
                 tone=req.tone,
                 count=1,
+                style_brief=style_brief,
+                style_hints=style_hints,
             )
             entry = update_reply(entry["id"], replies[0]) or entry
         except Exception as e:

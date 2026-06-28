@@ -370,7 +370,7 @@
     const t0 = performance.now();
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000);
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
     try {
       const res = await fetch("/api/generate", {
@@ -402,6 +402,12 @@
         ? (data.elapsed_ms / 1000).toFixed(1)
         : ((performance.now() - t0) / 1000).toFixed(1);
       let msg = `${data.replies.length} réponses · ${sec}s`;
+      if (data.comments_analyzed > 0) {
+        msg += ` · ${data.comments_analyzed} com. analysés`;
+      }
+      if (data.style_learned && data.subreddit_sessions > 0) {
+        msg += ` · mémoire ${data.subreddit_sessions}×`;
+      }
       if (mode === "link" && !(data.body || "").trim()) {
         msg += " · corps non lu (titre seul)";
       }

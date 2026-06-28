@@ -6,12 +6,15 @@ import asyncio
 import json
 import os
 import re
+from typing import Any, Literal
 
 import httpx
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
-_ANGLES = (
+PostKind = Literal["anecdote", "discussion"]
+
+_ANGLES_ANECDOTE = (
     "social : texto/crush/ex ex, gêne ou audace",
     "lazy : t'as rien fait ou procrastiné de ouf",
     "stunt / pari / truc dangereux raté",
@@ -20,13 +23,29 @@ _ANGLES = (
     "confession un peu dark, gênante ou random",
 )
 
+_ANGLES_DISCUSSION = (
+    "avis clair (oui/non/ça dépend) + raison centrale liée au post",
+    "empathie envers la personne la plus touchée dans l'histoire",
+    "frontière : ce que l'autre n'a pas le droit d'exiger ou de contrôler",
+    "recadrage : jalousie, respect du deuil ou du passé de l'autre",
+    "nuance couple : parler sans ultimatum ni faire culpabiliser",
+    "expérience perso courte mais 100 % sur le sujet du post",
+)
+
 _CLICHE_BAN = (
     "réorganiser/ranger/classer cuisine/chambre/placard/épices/chaussettes, "
     "2h/3h du mat, « for no reason », « absolutely no reason », "
     "terminer par lmao/mdrr sur chaque réponse"
 )
 
-SYSTEM = (
+_OFF_TOPIC_BAN = (
+    "virus informatique, café sur disque dur, disque dur externe, "
+    "supprimer des fichiers saoul, rangement de placard, "
+    "« c'est personnel y a pas de règle », « j'ai pas la tête à juger », "
+    "anecdotes random sans lien avec le post"
+)
+
+SYSTEM_ANECDOTE = (
     "Tu écris UN commentaire Reddit ultra-court — vrai user r/AskReddit, pas une IA. "
     "LONGUEUR : UNE phrase, 8 à 18 mots. "
     "Exemples : « j'ai envoyé un message à tous mes crush d'enfance » · "
@@ -39,16 +58,88 @@ SYSTEM = (
     "Pas de fautes bêtes. LANGUE = celle du post. Texte seul."
 )
 
+SYSTEM_DISCUSSION = (
+    "Tu réponds au VRAI sujet du post Reddit (avis, éthique, relation, deuil, conflit…). "
+    "Comme un vrai commentateur : direct, humain, pas une IA. "
+    "1 à 2 phrases, 15 à 55 mots. Réponds à la question (oui/non/approprié ou pas + pourquoi). "
+    "Reste collé au contexte du post — pas de digression. "
+    f"INTERDIT : {_OFF_TOPIC_BAN}, listes à puces, ton coach, « en tant qu'IA ». "
+    "Exemples de bon ton (sujet : photos d'un ex décédé) : "
+    "« absolutely appropriate — that's all they have left of someone they loved, "
+    "you don't get to erase their grief » · "
+    "« oui c'est normal, la seule raison qu'ils ne sont plus ensemble c'est la mort, "
+    "tu n'as pas à demander qu'ils effacent ça ». "
+    "LANGUE = celle du post. Texte seul."
+)
+
 _TRANSLATE_SYSTEM = (
     "Traduis des commentaires Reddit en français oral et décontracté. "
     "Garde le ton, la longueur, le slang si présent. "
     "Réponds UNIQUEMENT avec un JSON valide : un tableau de strings, même ordre, même nombre."
 )
 
+_ANECDOTE_PATTERNS = (
+    r"what(?:'s| is) the (?:craziest|wildest|weirdest|dumbest|most)",
+    r"have you ever",
+    r"what did you do",
+    r"what(?:'s| is) something",
+    r"tell us about",
+    r"most embarrassing",
+    r"without (?:any )?reason",
+    r"something crazy",
+    r"quelle est la chose",
+    r"tu as déjà",
+    r"qu'as-tu fait",
+    r"la chose la plus",
+)
+
+_DISCUSSION_PATTERNS = (
+    r"is it (?:appropriate|ok|wrong|normal|weird|fair)",
+    r"should i\b",
+    r"am i the asshole",
+    r"\baita\b",
+    r"would you\b",
+    r"do you think",
+    r"how do i\b",
+    r"what would you do",
+    r"est-ce (?:normal|approprié|ok|mal)",
+    r"je devrais",
+    r"qu'en pensez",
+    r"passed away",
+    r"died\b",
+    r"deceased",
+    r"late (?:boyfriend|girlfriend|partner|husband|wife)",
+    r"relationship",
+    r"partner",
+    r"boyfriend",
+    r"girlfriend",
+    r"photos? (?:of|from)",
+    r"videos? (?:of|from)",
+    r"keep (?:them|it|photos)",
+    r"delete (?:them|it|photos)",
+)
+
 
 def _clip(text: str, limit: int = 1200) -> str:
     text = text.strip()
     return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _classify_post(title: str, body: str, subreddit: str) -> PostKind:
+    """AskReddit anecdote vs discussion / avis sur le fond du post."""
+    text = f"{subreddit} {title} {body}".lower()
+
+    if "askreddit" in text:
+        return "anecdote"
+
+    anecdote = sum(1 for p in _ANECDOTE_PATTERNS if re.search(p, text))
+    discussion = sum(1 for p in _DISCUSSION_PATTERNS if re.search(p, text))
+
+    if discussion > 0 and discussion >= anecdote:
+        return "discussion"
+    if anecdote > 0:
+        return "anecdote"
+    return "discussion"
 
 
 def _detect_language(title: str, body: str) -> str:
@@ -68,7 +159,8 @@ def _detect_language(title: str, body: str) -> str:
     en = len(
         re.findall(
             r"\b(the|you|what|when|did|have|was|were|my|your|something|crazy|thing|"
-            r"about|just|never|bored|most|that|this|how|why|i'm|i've|don't|anyone|ever)\b",
+            r"about|just|never|bored|most|that|this|how|why|i'm|i've|don't|anyone|ever|"
+            r"appropriate|partner|photos|videos|died|passed)\b",
             sample,
         )
     )
@@ -81,43 +173,68 @@ def _detect_language(title: str, body: str) -> str:
     return "fr"
 
 
-def _post_context(title: str, body: str, subreddit: str, lang: str) -> str:
+def _post_context(
+    title: str,
+    body: str,
+    subreddit: str,
+    lang: str,
+    kind: PostKind,
+    style_brief: str | None = None,
+) -> str:
     lang_label = "français" if lang == "fr" else "anglais"
-    parts = [f"Langue du post : {lang_label}"]
+    kind_label = (
+        "anecdote personnelle (style AskReddit)"
+        if kind == "anecdote"
+        else "avis / discussion — réponds au fond du sujet"
+    )
+    parts = [f"Langue du post : {lang_label}", f"Type de post : {kind_label}"]
     if subreddit and subreddit not in ("r/...", ""):
         parts.append(f"Subreddit : {subreddit}")
     parts.append(f"Titre : {title.strip()}")
     if body.strip():
         parts.append(f"Post :\n{_clip(body)}")
+    if kind == "discussion":
+        parts.append(
+            "Consigne : chaque réponse doit donner un AVIS sur la situation du post, "
+            "pas une histoire random hors-sujet."
+        )
+    if style_brief:
+        parts.append(
+            "\n--- Style appris des vrais commentaires sur ce thread / ce subreddit ---\n"
+            + style_brief
+        )
     return "\n".join(parts)
 
 
-def _clean_reply(text: str) -> str:
+def _clean_reply(text: str, *, max_words: int) -> str:
     text = text.strip()
     if text.startswith('"') and text.endswith('"'):
         text = text[1:-1].strip()
     text = re.sub(r"^```\w*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return _trim_long_reply(text)
+    return _trim_long_reply(text, max_words=max_words)
 
 
-_MAX_WORDS = 18
-
-
-def _trim_long_reply(text: str) -> str:
-    """Filet de sécurité — une phrase courte."""
+def _trim_long_reply(text: str, *, max_words: int) -> str:
     text = text.strip()
     words = text.split()
-    if len(words) <= _MAX_WORDS:
+    if len(words) <= max_words:
         return text
 
-    parts = re.split(r"(?<=[.!?…])\s+", text, maxsplit=1)
-    first = parts[0].strip()
-    if first and len(first.split()) <= _MAX_WORDS:
-        return first
+    parts = re.split(r"(?<=[.!?…])\s+", text, maxsplit=2)
+    kept: list[str] = []
+    total = 0
+    for part in parts:
+        w = len(part.split())
+        if total + w > max_words:
+            break
+        kept.append(part.strip())
+        total += w
+    if kept:
+        return " ".join(kept)
 
-    return " ".join(words[:_MAX_WORDS]).rstrip(",;:")
+    return " ".join(words[:max_words]).rstrip(",;:")
 
 
 def _anthropic_key() -> str:
@@ -180,6 +297,54 @@ async def _call_claude(
     ) from last_err
 
 
+def _generation_params(
+    kind: PostKind,
+    style_hints: dict[str, Any] | None = None,
+) -> tuple[str, tuple[str, ...], int, int, str]:
+    if kind == "anecdote":
+        system, angles, max_tokens, max_words, length_hint = (
+            SYSTEM_ANECDOTE,
+            _ANGLES_ANECDOTE,
+            45,
+            18,
+            "UNE phrase, 8-18 mots. Anecdote perso sur le thème du post AskReddit.",
+        )
+    else:
+        system, angles, max_tokens, max_words, length_hint = (
+            SYSTEM_DISCUSSION,
+            _ANGLES_DISCUSSION,
+            110,
+            55,
+            "1-2 phrases, 15-55 mots. Avis direct sur le sujet du post — pas d'histoire hors-sujet.",
+        )
+
+    if style_hints:
+        custom_angles = style_hints.get("angles")
+        if isinstance(custom_angles, (list, tuple)) and custom_angles:
+            angles = tuple(str(a) for a in custom_angles if str(a).strip())[:6]
+        try:
+            mx = int(style_hints.get("max_words") or 0)
+            if 10 <= mx <= 120:
+                max_words = mx
+                max_tokens = max(max_tokens, min(160, mx * 3))
+                if kind == "discussion":
+                    mn = int(style_hints.get("min_words") or 10)
+                    length_hint = (
+                        f"1-2 phrases, {mn}-{max_words} mots. "
+                        "Imite le style des vrais commentaires du thread."
+                    )
+        except (TypeError, ValueError):
+            pass
+
+    if style_hints and kind == "discussion":
+        system = (
+            system
+            + " Priorité : imiter le style des exemples de commentaires fournis ci-dessous."
+        )
+
+    return system, angles, max_tokens, max_words, length_hint
+
+
 async def _one_claude(
     client: httpx.AsyncClient,
     *,
@@ -189,7 +354,10 @@ async def _one_claude(
     angle: str,
     index: int,
     avoid: list[str],
+    kind: PostKind,
+    style_hints: dict[str, Any] | None = None,
 ) -> str:
+    system, _, max_tokens, max_words, length_hint = _generation_params(kind, style_hints)
     lang_label = "français" if lang == "fr" else "anglais"
     avoid_block = ""
     if avoid:
@@ -203,11 +371,12 @@ async def _one_claude(
         f"Langue OBLIGATOIRE : {lang_label}\n"
         f"Ton : {tone}\n"
         f"Angle (#{index + 1}) : {angle}\n"
-        "UNE phrase, 8-18 mots. Original et différent des autres. Colle tel quel."
+        f"{length_hint} Original et différent des autres. Colle tel quel."
     )
-    return await _call_claude(
-        client, system=SYSTEM, user=user, max_tokens=45, temperature=1.0
+    raw = await _call_claude(
+        client, system=system, user=user, max_tokens=max_tokens, temperature=0.92
     )
+    return _clean_reply(raw, max_words=max_words)
 
 
 async def generate_replies(
@@ -217,25 +386,30 @@ async def generate_replies(
     subreddit: str,
     tone: str,
     count: int,
+    style_brief: str | None = None,
+    style_hints: dict[str, Any] | None = None,
 ) -> tuple[list[str], str]:
     lang = _detect_language(title, body)
-    context = _post_context(title, body, subreddit, lang)
+    kind = _classify_post(title, body, subreddit)
+    context = _post_context(title, body, subreddit, lang, kind, style_brief)
+    _, angles, _, _, _ = _generation_params(kind, style_hints)
     replies: list[str] = []
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=90.0) as client:
         for i in range(count):
             raw = await _one_claude(
                 client,
                 context=context,
                 lang=lang,
                 tone=tone,
-                angle=_ANGLES[i % len(_ANGLES)],
+                angle=angles[i % len(angles)],
                 index=i,
                 avoid=replies,
+                kind=kind,
+                style_hints=style_hints,
             )
-            cleaned = _clean_reply(raw)
-            if cleaned:
-                replies.append(cleaned)
+            if raw:
+                replies.append(raw)
 
     if not replies:
         raise RuntimeError("Claude n'a renvoyé aucune réponse. Réessaie.")
