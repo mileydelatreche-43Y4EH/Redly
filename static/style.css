@@ -710,6 +710,10 @@ body {
   color: #046a38;
 }
 
+.status.warn {
+  color: #b45309;
+}
+
 .hidden {
   display: none !important;
 }

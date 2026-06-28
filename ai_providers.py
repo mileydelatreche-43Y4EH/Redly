@@ -59,16 +59,12 @@ SYSTEM_ANECDOTE = (
 )
 
 SYSTEM_DISCUSSION = (
-    "Tu réponds au VRAI sujet du post Reddit (avis, éthique, relation, deuil, conflit…). "
+    "Tu réponds au VRAI sujet du post Reddit (titre + corps). "
     "Comme un vrai commentateur : direct, humain, pas une IA. "
-    "1 à 2 phrases, 15 à 55 mots. Réponds à la question (oui/non/approprié ou pas + pourquoi). "
-    "Reste collé au contexte du post — pas de digression. "
+    "Si des commentaires réels du thread sont fournis, COPIE leur style de ponctuation "
+    "et leur longueur (ne invente pas un format type « oui — explication »). "
+    "Réponds à la question posée dans le post. "
     f"INTERDIT : {_OFF_TOPIC_BAN}, listes à puces, ton coach, « en tant qu'IA ». "
-    "Exemples de bon ton (sujet : photos d'un ex décédé) : "
-    "« absolutely appropriate — that's all they have left of someone they loved, "
-    "you don't get to erase their grief » · "
-    "« oui c'est normal, la seule raison qu'ils ne sont plus ensemble c'est la mort, "
-    "tu n'as pas à demander qu'ils effacent ça ». "
     "LANGUE = celle du post. Texte seul."
 )
 
@@ -192,7 +188,7 @@ def _post_context(
         parts.append(f"Subreddit : {subreddit}")
     parts.append(f"Titre : {title.strip()}")
     if body.strip():
-        parts.append(f"Post :\n{_clip(body)}")
+        parts.append(f"Corps du post (contexte obligatoire) :\n{_clip(body, 2000)}")
     if kind == "discussion":
         parts.append(
             "Consigne : chaque réponse doit donner un AVIS sur la situation du post, "
@@ -206,14 +202,24 @@ def _post_context(
     return "\n".join(parts)
 
 
-def _clean_reply(text: str, *, max_words: int) -> str:
+def _clean_reply(
+    text: str,
+    *,
+    max_words: int,
+    allow_em_dash: bool = True,
+) -> str:
     text = text.strip()
     if text.startswith('"') and text.endswith('"'):
         text = text[1:-1].strip()
     text = re.sub(r"^```\w*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return _trim_long_reply(text, max_words=max_words)
+    text = _trim_long_reply(text, max_words=max_words)
+    if not allow_em_dash:
+        text = text.replace("—", ", ").replace("–", ", ")
+        text = re.sub(r"\s+,\s+", ", ", text)
+        text = re.sub(r",\s*,", ",", text)
+    return text.strip()
 
 
 def _trim_long_reply(text: str, *, max_words: int) -> str:
@@ -324,23 +330,28 @@ def _generation_params(
             angles = tuple(str(a) for a in custom_angles if str(a).strip())[:6]
         try:
             mx = int(style_hints.get("max_words") or 0)
-            if 10 <= mx <= 120:
+            mn = int(style_hints.get("min_words") or 0)
+            if 10 <= mx <= 130:
                 max_words = mx
-                max_tokens = max(max_tokens, min(160, mx * 3))
+                max_tokens = max(max_tokens, min(200, mx * 3))
                 if kind == "discussion":
-                    mn = int(style_hints.get("min_words") or 10)
+                    if mn < 4:
+                        mn = max(4, mx // 3)
                     length_hint = (
-                        f"1-2 phrases, {mn}-{max_words} mots. "
-                        "Imite le style des vrais commentaires du thread."
+                        f"{mn}-{max_words} mots. "
+                        "Imite la longueur et la ponctuation des commentaires réels du thread."
                     )
         except (TypeError, ValueError):
             pass
 
-    if style_hints and kind == "discussion":
+    if style_hints and style_hints.get("verbatim_examples"):
         system = (
             system
-            + " Priorité : imiter le style des exemples de commentaires fournis ci-dessous."
+            + " OBLIGATION : même ponctuation que les commentaires réels fournis "
+            "(pas de tiret long — sauf s'ils en ont)."
         )
+        if not style_hints.get("allow_em_dash", True):
+            system += " INTERDIT le tiret long — (em dash) : absent des top commentaires."
 
     return system, angles, max_tokens, max_words, length_hint
 
@@ -366,17 +377,24 @@ async def _one_claude(
             + "\n".join(f"• {r}" for r in avoid)
         )
 
+    extra_dont = ""
+    if style_hints and style_hints.get("extra_dont"):
+        extra_dont = "\nÀ éviter absolument : " + " · ".join(style_hints["extra_dont"])
+
     user = (
-        f"{context}{avoid_block}\n\n"
+        f"{context}{avoid_block}{extra_dont}\n\n"
         f"Langue OBLIGATOIRE : {lang_label}\n"
         f"Ton : {tone}\n"
         f"Angle (#{index + 1}) : {angle}\n"
         f"{length_hint} Original et différent des autres. Colle tel quel."
     )
     raw = await _call_claude(
-        client, system=system, user=user, max_tokens=max_tokens, temperature=0.92
+        client, system=system, user=user, max_tokens=max_tokens, temperature=0.78
     )
-    return _clean_reply(raw, max_words=max_words)
+    allow_em = True
+    if style_hints and "allow_em_dash" in style_hints:
+        allow_em = bool(style_hints.get("allow_em_dash"))
+    return _clean_reply(raw, max_words=max_words, allow_em_dash=allow_em)
 
 
 async def generate_replies(

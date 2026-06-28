@@ -89,6 +89,7 @@ class GenerateResponse(BaseModel):
     comments_analyzed: int = 0
     style_learned: bool = False
     subreddit_sessions: int = 0
+    body_loaded: bool = False
 
 
 class TranslatePreviewRequest(BaseModel):
@@ -242,6 +243,7 @@ async def api_generate(req: GenerateRequest):
         comments_analyzed=int(style_meta.get("comments_analyzed") or 0),
         style_learned=bool(style_meta.get("style_learned")),
         subreddit_sessions=int(style_meta.get("subreddit_sessions") or 0),
+        body_loaded=bool((body or "").strip()),
     )
 
 

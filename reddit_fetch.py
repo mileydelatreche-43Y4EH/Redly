@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html as html_lib
+import json
 import os
 import re
 from urllib.parse import urlparse
@@ -18,9 +19,11 @@ _HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/122.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/json,application/xhtml+xml,*/*;q=0.8",
+    "Accept": "application/json,text/html,application/xhtml+xml,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,fr;q=0.8",
 }
+
+_JSON_PARAMS = {"limit": 50, "sort": "best", "depth": 2, "raw_json": 1}
 
 
 def _is_reddit_url(url: str) -> bool:
@@ -73,6 +76,32 @@ def _extract_post(payload: list) -> tuple[str, str, str]:
     elif not body and post.get("url"):
         body = f"Lien partagé : {post.get('url')}"
     return title, body, sub
+
+
+def _parse_embedded_post_body(page: str) -> str:
+    """Extrait selftext depuis le HTML new Reddit (fallback)."""
+    patterns = (
+        r'"selftext"\s*:\s*"((?:\\.|[^"\\])*)"',
+        r'"selfText"\s*:\s*"((?:\\.|[^"\\])*)"',
+        r'<div[^>]*id="[^"]*-post-rtjson-content"[^>]*>(.*?)</div>',
+        r'<shreddit-post-text-body[^>]*>(.*?)</shreddit-post-text-body>',
+    )
+    for pat in patterns[:2]:
+        m = re.search(pat, page, re.S | re.I)
+        if m:
+            try:
+                raw = m.group(1)
+                if pat.startswith('"'):
+                    return json.loads(f'"{raw}"').strip()
+            except (json.JSONDecodeError, ValueError):
+                pass
+    for pat in patterns[2:]:
+        m = re.search(pat, page, re.S | re.I)
+        if m:
+            text = _strip_html(m.group(1))
+            if text:
+                return text
+    return ""
 
 
 def _parse_old_reddit_html(page: str, path: str) -> tuple[str, str, str]:
@@ -244,28 +273,16 @@ def _extract_top_comments(payload: list, *, limit: int = 12) -> list[dict]:
 async def _fetch_comments_json(
     client: httpx.AsyncClient, path: str, *, limit: int = 12
 ) -> list[dict]:
-    url = f"https://www.reddit.com{path.rstrip('/')}.json"
-    try:
-        r = await client.get(
-            url,
-            headers=_HEADERS,
-            params={"limit": 50, "sort": "best", "depth": 2, "raw_json": 1},
-            timeout=20.0,
-        )
-        if r.status_code != 200:
-            return []
-        payload = r.json()
-        if not isinstance(payload, list):
-            return []
-        return _extract_top_comments(payload, limit=limit)
-    except (httpx.HTTPError, ValueError, TypeError):
-        return []
+    listing = await _fetch_thread_listing(client, path)
+    if listing:
+        return _extract_top_comments(listing, limit=limit)
+    return []
 
 
 async def _fetch_comments_oauth(
     client: httpx.AsyncClient, path: str, *, limit: int = 12
 ) -> list[dict]:
-    data = await _fetch_via_oauth_comments(client, path, limit=limit)
+    data = await _fetch_via_oauth_listing(client, path)
     if not data:
         return []
     return _extract_top_comments(data, limit=limit)
@@ -273,6 +290,61 @@ async def _fetch_comments_oauth(
 
 async def _fetch_via_oauth_comments(
     client: httpx.AsyncClient, path: str, *, limit: int = 12
+) -> list | None:
+    return await _fetch_via_oauth_listing(client, path)
+
+
+async def fetch_post_comments(
+    client: httpx.AsyncClient,
+    *,
+    path: str | None = None,
+    post_id: str | None = None,
+    limit: int = 12,
+) -> list[dict]:
+    """Récupère les meilleurs commentaires d'un post (JSON public puis OAuth)."""
+    if path:
+        comments = await _fetch_comments_json(client, path, limit=limit)
+        if comments:
+            return comments
+        return await _fetch_comments_oauth(client, path, limit=limit)
+
+    if post_id:
+        fake_path = f"/r/_/comments/{post_id}"
+        return await _fetch_comments_oauth(client, fake_path, limit=limit)
+
+    return []
+
+
+async def _fetch_thread_listing(
+    client: httpx.AsyncClient, path: str
+) -> list | None:
+    """API JSON Reddit : post + commentaires en un seul appel."""
+    for base in ("https://old.reddit.com", "https://www.reddit.com"):
+        url = f"{base}{path.rstrip('/')}.json"
+        try:
+            r = await client.get(
+                url,
+                headers=_HEADERS,
+                params=_JSON_PARAMS,
+                timeout=22.0,
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            if (
+                isinstance(data, list)
+                and data
+                and data[0].get("data", {}).get("children")
+            ):
+                return data
+        except (httpx.HTTPError, ValueError, TypeError):
+            continue
+
+    return await _fetch_via_oauth_listing(client, path)
+
+
+async def _fetch_via_oauth_listing(
+    client: httpx.AsyncClient, path: str
 ) -> list | None:
     client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
     secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
@@ -303,7 +375,7 @@ async def _fetch_via_oauth_comments(
             "User-Agent": _HEADERS["User-Agent"],
             "Authorization": f"bearer {token}",
         },
-        params={"limit": 40, "depth": 2, "sort": "best", "raw_json": 1},
+        params=_JSON_PARAMS,
     )
     if api_r.status_code != 200:
         return None
@@ -311,67 +383,10 @@ async def _fetch_via_oauth_comments(
     if isinstance(data, list) and data:
         return data
     return None
-
-
-async def fetch_post_comments(
-    client: httpx.AsyncClient,
-    *,
-    path: str | None = None,
-    post_id: str | None = None,
-    limit: int = 12,
-) -> list[dict]:
-    """Récupère les meilleurs commentaires d'un post (JSON public puis OAuth)."""
-    if path:
-        comments = await _fetch_comments_json(client, path, limit=limit)
-        if comments:
-            return comments
-        return await _fetch_comments_oauth(client, path, limit=limit)
-
-    if post_id:
-        fake_path = f"/r/_/comments/{post_id}"
-        return await _fetch_comments_oauth(client, fake_path, limit=limit)
-
-    return []
 
 
 async def _fetch_via_oauth(client: httpx.AsyncClient, path: str) -> list | None:
-    client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
-    secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
-    if not client_id or not secret:
-        return None
-
-    token_r = await client.post(
-        "https://www.reddit.com/api/v1/access_token",
-        data={"grant_type": "client_credentials"},
-        auth=(client_id, secret),
-        headers={"User-Agent": _HEADERS["User-Agent"]},
-    )
-    if token_r.status_code != 200:
-        return None
-
-    token = token_r.json().get("access_token")
-    if not token:
-        return None
-
-    parts = path.strip("/").split("/")
-    if len(parts) < 4 or parts[0] != "r" or parts[2] != "comments":
-        return None
-    post_id = parts[3]
-
-    api_r = await client.get(
-        f"https://oauth.reddit.com/comments/{post_id}",
-        headers={
-            "User-Agent": _HEADERS["User-Agent"],
-            "Authorization": f"bearer {token}",
-        },
-        params={"limit": 1, "depth": 0},
-    )
-    if api_r.status_code != 200:
-        return None
-    data = api_r.json()
-    if isinstance(data, list) and data:
-        return data
-    return None
+    return await _fetch_via_oauth_listing(client, path)
 
 
 def _result(
@@ -399,40 +414,44 @@ async def fetch_reddit_post(url: str) -> dict:
         raise ValueError("Ce n'est pas une URL Reddit valide.")
 
     source = url.strip()
-    async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, http2=False) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, http2=False) as client:
         path, page_urls = await _resolve_post_path(client, source)
         post_id = _post_id_from_path(path)
         canonical = _canonical_reddit_url(path)
 
+        # 1) JSON Reddit (old + www + OAuth) — post + commentaires
+        listing = await _fetch_thread_listing(client, path)
+        if listing:
+            title, body, sub = _extract_post(listing)
+            if not sub:
+                sub = _sub_from_path(path)
+            comments = _extract_top_comments(listing, limit=15)
+            return _result(title, body, sub, source, comments)
+
+        # 2) Pullpush — corps du post fiable
+        pullpush = await _fetch_via_pullpush(client, post_id, path)
+        if pullpush:
+            title, body, sub = pullpush
+            comments = await fetch_post_comments(client, path=path, limit=15)
+            return _result(title, body, sub, source, comments)
+
+        # 3) HTML (old + new) avec extraction corps embarqué
         try:
             page = await _fetch_html(client, page_urls)
             title, body, sub = _parse_old_reddit_html(page, path)
+            if not body:
+                body = _parse_embedded_post_body(page)
             if title:
-                comments = await fetch_post_comments(client, path=path)
+                comments = await fetch_post_comments(client, path=path, limit=15)
                 return _result(title, body, sub, source, comments)
         except httpx.HTTPError:
             pass
 
-        data = await _fetch_via_oauth(client, path)
-        if data:
-            title, body, sub = _extract_post(data)
-            if not sub:
-                sub = _sub_from_path(path)
-            comments = _extract_top_comments(data, limit=12)
-            if not comments:
-                comments = await fetch_post_comments(client, path=path)
-            return _result(title, body, sub, source, comments)
-
-        pullpush = await _fetch_via_pullpush(client, post_id, path)
-        if pullpush:
-            title, body, sub = pullpush
-            comments = await fetch_post_comments(client, path=path)
-            return _result(title, body, sub, source, comments)
-
+        # 4) oEmbed — titre seul (dernier recours)
         oembed = await _fetch_via_oembed(client, canonical, path)
         if oembed:
             title, body, sub = oembed
-            comments = await fetch_post_comments(client, path=path)
+            comments = await fetch_post_comments(client, path=path, limit=15)
             return _result(title, body, sub, source, comments)
 
     raise ValueError(

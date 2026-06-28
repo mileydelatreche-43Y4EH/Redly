@@ -402,16 +402,22 @@
         ? (data.elapsed_ms / 1000).toFixed(1)
         : ((performance.now() - t0) / 1000).toFixed(1);
       let msg = `${data.replies.length} réponses · ${sec}s`;
-      if (data.comments_analyzed > 0) {
-        msg += ` · ${data.comments_analyzed} com. analysés`;
+      if (mode === "link") {
+        if (data.body_loaded) {
+          msg += " · corps lu";
+        } else {
+          msg += " · ⚠ corps non lu — colle le texte en mode Texte";
+        }
+        if (data.comments_analyzed > 0) {
+          msg += ` · ${data.comments_analyzed} com. analysés`;
+        } else {
+          msg += " · ⚠ commentaires non lus";
+        }
       }
       if (data.style_learned && data.subreddit_sessions > 0) {
         msg += ` · mémoire ${data.subreddit_sessions}×`;
       }
-      if (mode === "link" && !(data.body || "").trim()) {
-        msg += " · corps non lu (titre seul)";
-      }
-      setStatus(msg, "ok");
+      setStatus(msg, data.comments_analyzed > 0 && data.body_loaded ? "ok" : "warn");
     } catch (err) {
       if (err.name === "AbortError") {
         setStatus("Trop long — réduis le nombre de réponses.", "error");
